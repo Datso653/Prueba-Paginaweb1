@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CINEMATRIX · IMDb Data Stories</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- Grain overlay -->
+  <div class="grain"></div>
+
+  <!-- Loader -->
+  <div id="loader" class="loader">
+    <div class="loader__inner">
+      <div class="loader__reel"></div>
+      <p class="loader__text">CARGANDO BOBINA</p>
+      <p id="loader-status" class="loader__status">Iniciando...</p>
+      <div class="loader__bar"><div id="loader-bar-fill" class="loader__bar-fill"></div></div>
+    </div>
+  </div>
+
+  <!-- HERO -->
+  <header class="hero">
+    <div class="hero__marquee">
+      <span>★ IMDb DATASET · ACTUALIZADO DIARIAMENTE · NON-COMMERCIAL USE · ★ IMDb DATASET · ACTUALIZADO DIARIAMENTE · NON-COMMERCIAL USE · </span>
+    </div>
+    <div class="hero__content">
+      <p class="hero__kicker">Data Stories · Vol. 01</p>
+      <h1 class="hero__title">
+        <span class="hero__title-line">CINE</span>
+        <span class="hero__title-line hero__title-line--outline">MATRIX</span>
+      </h1>
+      <p class="hero__sub">Tres historias que el dataset abierto de IMDb cuenta sobre <em>cómo miramos películas</em>.</p>
+      <div class="hero__stats">
+        <div class="stat"><span id="stat-titles" class="stat__num">—</span><span class="stat__label">títulos analizados</span></div>
+        <div class="stat"><span id="stat-votes" class="stat__num">—</span><span class="stat__label">votos totales</span></div>
+        <div class="stat"><span id="stat-years" class="stat__num">—</span><span class="stat__label">años de cine</span></div>
+      </div>
+    </div>
+    <div class="hero__scroll">
+      <span>scroll</span>
+      <div class="hero__scroll-line"></div>
+    </div>
+  </header>
+
+  <main>
+
+    <!-- MÉTRICA 1 -->
+    <section class="metric" id="metric-1">
+      <div class="metric__header">
+        <span class="metric__num">01</span>
+        <div>
+          <h2 class="metric__title">EL SWEET SPOT</h2>
+          <p class="metric__sub">¿Cuánto debe durar una buena película?</p>
+        </div>
+      </div>
+      <p class="metric__intro">
+        Cruzamos <strong>década de estreno</strong> con <strong>duración</strong>, y coloreamos cada celda según el rating promedio. La pregunta: ¿las películas largas son realmente mejores? ¿Y eso cambió a lo largo del siglo?
+      </p>
+      <div class="chart-wrap">
+        <div id="chart-heatmap" class="chart"></div>
+        <div class="chart-legend">
+          <span class="chart-legend__label">peor</span>
+          <div id="legend-gradient" class="chart-legend__gradient"></div>
+          <span class="chart-legend__label">mejor</span>
+        </div>
+      </div>
+      <p id="insight-1" class="insight">—</p>
+    </section>
+
+    <!-- MÉTRICA 2 -->
+    <section class="metric" id="metric-2">
+      <div class="metric__header">
+        <span class="metric__num">02</span>
+        <div>
+          <h2 class="metric__title">GÉNEROS QUE ENVEJECEN BIEN</h2>
+          <p class="metric__sub">Rating promedio por género a lo largo de las décadas</p>
+        </div>
+      </div>
+      <p class="metric__intro">
+        Cada línea es un género. La pregunta: ¿qué géneros mejoran con el tiempo y cuáles caen en picada? Pasá el mouse para aislar uno.
+      </p>
+      <div class="chart-wrap">
+        <div id="chart-lines" class="chart"></div>
+        <div id="legend-genres" class="genre-legend"></div>
+      </div>
+      <p id="insight-2" class="insight">—</p>
+    </section>
+
+    <!-- MÉTRICA 3 -->
+    <section class="metric" id="metric-3">
+      <div class="metric__header">
+        <span class="metric__num">03</span>
+        <div>
+          <h2 class="metric__title">HIDDEN GEMS vs HYPE</h2>
+          <p class="metric__sub">Rating vs cantidad de votos</p>
+        </div>
+      </div>
+      <p class="metric__intro">
+        Cada punto es una película. <strong>Eje X:</strong> popularidad (log de votos). <strong>Eje Y:</strong> rating. Arriba a la izquierda están las <em>joyas de nicho</em>: amadas pero poco vistas. Arriba a la derecha, los hits con consenso. Filtrá por género para explorar.
+      </p>
+      <div class="scatter-controls">
+        <label>Filtrar género:</label>
+        <select id="genre-filter"></select>
+      </div>
+      <div class="chart-wrap">
+        <div id="chart-scatter" class="chart"></div>
+      </div>
+      <div id="gems-list" class="gems"></div>
+      <p id="insight-3" class="insight">—</p>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <div class="footer__col">
+      <p class="footer__logo">CINEMATRIX</p>
+      <p class="footer__small">Data Stories · Vol. 01 · 2026</p>
+    </div>
+    <div class="footer__col">
+      <p class="footer__small">Fuente</p>
+      <p><a href="https://developer.imdb.com/non-commercial-datasets/" target="_blank" rel="noopener">IMDb Non-Commercial Datasets ↗</a></p>
+      <p class="footer__small footer__disclaimer">Información cortesía de IMDb (imdb.com). Uso no comercial.</p>
+    </div>
+    <div class="footer__col">
+      <p class="footer__small">Stack</p>
+      <p>HTML · CSS · vanilla JS</p>
+      <p>SVG charts a mano, sin librerías</p>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
