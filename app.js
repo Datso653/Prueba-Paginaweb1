@@ -1,22 +1,17 @@
 /* ============================================================
    CINEMATRIX — IMDb Data Stories
-   Procesa title.basics.tsv y title.ratings.tsv en el cliente
+   Consume data/movies.json pre-procesado
    ============================================================ */
 
 const CONFIG = {
-  // Rutas relativas al index.html en el repo
-  // Subí los TSV descomprimidos a /data/ en tu repo
-  basicsURL:  'data/title.basics.tsv',
-  ratingsURL: 'data/title.ratings.tsv',
-
-  // Filtros para reducir ruido
-  minVotes: 1000,           // mínimo de votos para que un título cuente
-  titleTypes: ['movie'],    // solo películas (no series ni shorts)
-  minYear: 1920,
-  maxYear: 2024,
+  // El frontend prueba primero el .gz, luego el .json plano.
+  // Subí cualquiera de los dos al repo (recomendado: solo el .gz).
+  dataCandidates: [
+    'data/movies.json.gz',
+    'data/movies.json',
+  ],
 };
 
-// ---------- UTILIDADES ----------
 const $ = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
 
@@ -32,102 +27,98 @@ const setStatus = (msg, pct) => {
   if (pct != null) $('#loader-bar-fill').style.width = pct + '%';
 };
 
-// ---------- STREAMING TSV PARSER ----------
-async function streamTSV(url, onRow, onProgress) {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`No pude leer ${url} (HTTP ${resp.status})`);
+// ---------- CARGA DE DATOS ----------
+// Prueba primero el .gz, después el .json plano.
+// Descomprime gzip en el navegador con DecompressionStream (API nativa).
+async function loadData() {
+  // Encontrar qué archivo existe
+  setStatus('Buscando dataset...', 5);
+  let url = null;
+  for (const candidate of CONFIG.dataCandidates) {
+    try {
+      const head = await fetch(candidate, { method: 'HEAD' });
+      if (head.ok) { url = candidate; break; }
+    } catch (e) { /* probar el siguiente */ }
+  }
+  if (!url) {
+    throw new Error(`No encuentro movies.json ni movies.json.gz en /data/. Corré el notebook.`);
+  }
 
+  const isGz = url.endsWith('.gz');
+  setStatus(`Descargando ${url.split('/').pop()}...`, 10);
+
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} en ${url}`);
+
+  // Leer el stream mostrando progreso
   const contentLength = +resp.headers.get('Content-Length') || 0;
   const reader = resp.body.getReader();
-  const decoder = new TextDecoder('utf-8');
   let received = 0;
-  let buffer = '';
-  let isFirstLine = true;
-  let headers = [];
-  let rowCount = 0;
-
+  const chunks = [];
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
+    chunks.push(value);
     received += value.length;
-    buffer += decoder.decode(value, { stream: true });
-
-    let nl;
-    while ((nl = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, nl);
-      buffer = buffer.slice(nl + 1);
-      if (isFirstLine) {
-        headers = line.split('\t');
-        isFirstLine = false;
-        continue;
-      }
-      const cols = line.split('\t');
-      onRow(cols, headers);
-      rowCount++;
-      if (rowCount % 100000 === 0 && onProgress && contentLength) {
-        onProgress(received / contentLength, rowCount);
-        // ceder el event loop así no se traba la UI
-        await new Promise(r => setTimeout(r, 0));
-      }
+    if (contentLength) {
+      setStatus(`Descargando: ${fmtNum(received)} / ${fmtNum(contentLength)}`, 10 + (received / contentLength) * 65);
+    } else {
+      setStatus(`Descargando: ${fmtNum(received)}`, 40);
     }
   }
-  // última línea si no terminó en \n
-  if (buffer.trim()) {
-    const cols = buffer.split('\t');
-    onRow(cols, headers);
-  }
-  return rowCount;
-}
 
-// ---------- CARGA DE DATOS ----------
-async function loadData() {
-  // 1. Ratings primero (chico)
-  setStatus('Cargando ratings...', 5);
-  const ratings = new Map(); // tconst -> { rating, votes }
-  await streamTSV(CONFIG.ratingsURL, (cols) => {
-    // tconst averageRating numVotes
-    const tconst = cols[0];
-    const rating = parseFloat(cols[1]);
-    const votes = parseInt(cols[2], 10);
-    if (votes >= CONFIG.minVotes) {
-      ratings.set(tconst, { rating, votes });
+  const blob = new Blob(chunks);
+  let text;
+
+  if (isGz) {
+    // Algunos servers (incluido GitHub Pages a veces) mandan .gz con
+    // Content-Encoding: gzip y el navegador lo descomprime solo.
+    // Detectamos por los magic bytes 0x1f 0x8b — si están, descomprimimos manualmente;
+    // si no, ya viene en plano.
+    const firstBytes = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
+    const isStillCompressed = firstBytes[0] === 0x1f && firstBytes[1] === 0x8b;
+
+    if (isStillCompressed) {
+      setStatus('Descomprimiendo gzip...', 78);
+      if (typeof DecompressionStream === 'undefined') {
+        throw new Error('Tu navegador no soporta DecompressionStream. Usá Chrome/Edge/Firefox/Safari recientes, o subí el movies.json sin comprimir.');
+      }
+      const ds = new DecompressionStream('gzip');
+      const decompressedStream = blob.stream().pipeThrough(ds);
+      const decompressedBlob = await new Response(decompressedStream).blob();
+      text = await decompressedBlob.text();
+    } else {
+      // El navegador ya descomprimió (Content-Encoding: gzip)
+      text = await blob.text();
     }
-  }, (p, n) => setStatus(`Ratings: ${fmtNum(n)} filas`, 5 + p * 15));
+  } else {
+    text = await blob.text();
+  }
 
-  setStatus(`${fmtNum(ratings.size)} títulos con votos suficientes`, 20);
-
-  // 2. Basics (grande, se hace join al vuelo)
-  setStatus('Cargando metadata de películas...', 22);
-  const titles = []; // { tconst, primaryTitle, year, decade, runtime, genres[], rating, votes }
-  await streamTSV(CONFIG.basicsURL, (cols) => {
-    // tconst titleType primaryTitle originalTitle isAdult startYear endYear runtimeMinutes genres
-    const tconst = cols[0];
-    const r = ratings.get(tconst);
-    if (!r) return;
-    const titleType = cols[1];
-    if (!CONFIG.titleTypes.includes(titleType)) return;
-    const isAdult = cols[4] === '1';
-    if (isAdult) return;
-    const year = parseInt(cols[5], 10);
-    if (!year || year < CONFIG.minYear || year > CONFIG.maxYear) return;
-    const runtime = parseInt(cols[7], 10);
-    const genres = cols[8] === '\\N' ? [] : cols[8].split(',');
-
-    titles.push({
-      tconst,
-      title: cols[2],
-      year,
-      decade: Math.floor(year / 10) * 10,
-      runtime: isNaN(runtime) ? null : runtime,
-      genres,
-      rating: r.rating,
-      votes: r.votes,
-    });
-  }, (p, n) => setStatus(`Películas: ${fmtNum(n)} filas escaneadas`, 22 + p * 65));
-
-  setStatus(`${fmtNum(titles.length)} películas filtradas`, 90);
-  return titles;
+  setStatus('Parseando JSON...', 84);
+  return JSON.parse(text);
 }
+
+function normalize(data) {
+  return data.movies.map(m => ({
+    title: m.t,
+    year: m.y,
+    decade: Math.floor(m.y / 10) * 10,
+    rating: m.r,
+    votes: m.v,
+    runtime: m.m,
+    genres: m.g,
+  }));
+}
+
+// Umbrales mínimos por celda/punto. Se relajan automáticamente para
+// datasets chicos (modo muestra) y se endurecen para datasets grandes.
+function getThresholds(n) {
+  if (n < 500)   return { heatmapMin: 1,  genreMin: 2  };  // modo muestra
+  if (n < 5000)  return { heatmapMin: 5,  genreMin: 10 };
+  return { heatmapMin: 20, genreMin: 30 };                  // dataset completo
+}
+let THRESHOLDS = { heatmapMin: 20, genreMin: 30 };
 
 // ============================================================
 // MÉTRICA 1 — HEATMAP década × duración → rating
@@ -144,7 +135,7 @@ function computeHeatmap(titles) {
     { label: '160+', min: 160, max: Infinity },
   ];
 
-  const grid = {}; // key "decade-binIdx" -> { sum, n }
+  const grid = {};
   for (const t of titles) {
     if (t.runtime == null) continue;
     if (t.decade < 1930 || t.decade > 2020) continue;
@@ -163,7 +154,7 @@ function computeHeatmap(titles) {
         decade: d,
         binIdx: bi,
         binLabel: runtimeBins[bi].label,
-        avg: c && c.n >= 20 ? c.sum / c.n : null,
+        avg: c && c.n >= THRESHOLDS.heatmapMin ? c.sum / c.n : null,
         count: c ? c.n : 0,
       });
     }
@@ -184,7 +175,6 @@ function renderHeatmap(data) {
   const min = Math.min(...validAvgs);
   const max = Math.max(...validAvgs);
 
-  // Paleta heat (peor → mejor)
   const heatColors = ['#2a1f2e', '#4a2540', '#823654', '#c14d52', '#e8a04c', '#f4e285'];
   const colorFor = avg => {
     if (avg == null) return '#1a1a1f';
@@ -196,7 +186,6 @@ function renderHeatmap(data) {
   let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">`;
   svg += `<g transform="translate(${margin.left},${margin.top})">`;
 
-  // Cells
   cells.forEach(c => {
     const x = decades.indexOf(c.decade) * cellW;
     const y = c.binIdx * cellH;
@@ -210,7 +199,6 @@ function renderHeatmap(data) {
     }
   });
 
-  // Y axis labels (runtime bins)
   svg += `<g class="axis">`;
   runtimeBins.forEach((b, i) => {
     svg += `<text x="-10" y="${i * cellH + cellH/2 + 4}" text-anchor="end">${b.label}</text>`;
@@ -218,7 +206,6 @@ function renderHeatmap(data) {
   svg += `<text x="-70" y="${innerH/2}" transform="rotate(-90, -70, ${innerH/2})" text-anchor="middle" fill="#a8a39a" font-family="JetBrains Mono" font-size="10" letter-spacing="2">DURACIÓN (min)</text>`;
   svg += `</g>`;
 
-  // X axis labels (decades)
   svg += `<g class="axis">`;
   decades.forEach((d, i) => {
     svg += `<text x="${i * cellW + cellW/2}" y="${innerH + 20}" text-anchor="middle">${d}s</text>`;
@@ -229,7 +216,6 @@ function renderHeatmap(data) {
   svg += `</g></svg>`;
   $('#chart-heatmap').innerHTML = svg;
 
-  // Insight automático: ¿qué bin de duración tiene mejor rating promedio en general?
   const binAvgs = runtimeBins.map((b, bi) => {
     const c = cells.filter(c => c.binIdx === bi && c.avg != null);
     const w = c.reduce((s, x) => s + x.count, 0);
@@ -250,21 +236,17 @@ function computeGenresOverTime(titles) {
   const decades = [];
   for (let d = 1930; d <= 2020; d += 10) decades.push(d);
 
-  // Tomar top-N géneros por cantidad total de pelis
   const genreCount = {};
   for (const t of titles) {
-    for (const g of t.genres) {
-      genreCount[g] = (genreCount[g] || 0) + 1;
-    }
+    for (const g of t.genres) genreCount[g] = (genreCount[g] || 0) + 1;
   }
   const topGenres = Object.entries(genreCount)
-    .filter(([g]) => g && g !== '\\N')
+    .filter(([g]) => g)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 8)
     .map(x => x[0]);
 
-  // avg rating por género × década
-  const grid = {}; // genre -> decade -> { sum, n }
+  const grid = {};
   for (const g of topGenres) grid[g] = {};
   for (const t of titles) {
     if (t.decade < 1930 || t.decade > 2020) continue;
@@ -279,7 +261,7 @@ function computeGenresOverTime(titles) {
     genre: g,
     points: decades.map(d => {
       const c = grid[g][d];
-      return { decade: d, avg: c && c.n >= 30 ? c.sum / c.n : null, n: c ? c.n : 0 };
+      return { decade: d, avg: c && c.n >= THRESHOLDS.genreMin ? c.sum / c.n : null, n: c ? c.n : 0 };
     }).filter(p => p.avg != null),
   })).filter(s => s.points.length >= 4);
 
@@ -305,7 +287,6 @@ function renderGenres(data) {
   let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">`;
   svg += `<g transform="translate(${margin.left},${margin.top})">`;
 
-  // Gridlines Y
   svg += `<g class="grid">`;
   const ySteps = 5;
   for (let i = 0; i <= ySteps; i++) {
@@ -316,7 +297,6 @@ function renderGenres(data) {
   }
   svg += `</g>`;
 
-  // X axis
   svg += `<g class="axis">`;
   decades.forEach(d => {
     const x = xScale(d);
@@ -324,7 +304,6 @@ function renderGenres(data) {
   });
   svg += `</g>`;
 
-  // Lines
   series.forEach((s, i) => {
     const color = GENRE_COLORS[i % GENRE_COLORS.length];
     const pathD = s.points.map((p, j) => `${j === 0 ? 'M' : 'L'} ${xScale(p.decade)} ${yScale(p.avg)}`).join(' ');
@@ -337,7 +316,6 @@ function renderGenres(data) {
   svg += `</g></svg>`;
   $('#chart-lines').innerHTML = svg;
 
-  // Legend
   const legend = $('#legend-genres');
   legend.innerHTML = '';
   series.forEach((s, i) => {
@@ -351,7 +329,6 @@ function renderGenres(data) {
     legend.appendChild(item);
   });
 
-  // Insight: ¿qué género subió más entre primera y última década?
   let bestRise = { genre: null, delta: -Infinity };
   let bestFall = { genre: null, delta:  Infinity };
   series.forEach(s => {
@@ -379,25 +356,23 @@ function highlightGenre(genre) {
 // ============================================================
 // MÉTRICA 3 — Scatter rating vs votos
 // ============================================================
-let scatterTitles = []; // referencia global
+let scatterTitles = [];
 function renderScatter(titles, genreFilter = 'all') {
   const W = 900, H = 460;
   const margin = { top: 20, right: 20, bottom: 60, left: 50 };
   const innerW = W - margin.left - margin.right;
   const innerH = H - margin.top - margin.bottom;
 
-  // Filtrar
-  let data = titles.filter(t => t.votes >= 5000);
-  if (genreFilter !== 'all') {
-    data = data.filter(t => t.genres.includes(genreFilter));
-  }
-  // Para no saturar el SVG, samplear si hay demasiados
+  // Para dataset muestra usamos un threshold más bajo
+  const minVotesScatter = titles.length < 500 ? 10000 : 5000;
+  let data = titles.filter(t => t.votes >= minVotesScatter);
+  if (genreFilter !== 'all') data = data.filter(t => t.genres.includes(genreFilter));
+
   const MAX_POINTS = 4000;
   if (data.length > MAX_POINTS) {
     const step = data.length / MAX_POINTS;
     const sampled = [];
     for (let i = 0; i < data.length; i += step) sampled.push(data[Math.floor(i)]);
-    // Pero siempre incluir los gems y los hits para que se vean en los extremos
     const top = [...data].sort((a, b) => b.rating - a.rating).slice(0, 50);
     const hits = [...data].sort((a, b) => b.votes - a.votes).slice(0, 50);
     data = [...new Set([...sampled, ...top, ...hits])];
@@ -412,7 +387,6 @@ function renderScatter(titles, genreFilter = 'all') {
   let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">`;
   svg += `<g transform="translate(${margin.left},${margin.top})">`;
 
-  // Grid Y (rating)
   svg += `<g class="grid">`;
   for (let r = 1; r <= 10; r++) {
     const y = yScale(r);
@@ -421,7 +395,6 @@ function renderScatter(titles, genreFilter = 'all') {
   }
   svg += `</g>`;
 
-  // Grid X (votos log)
   svg += `<g class="axis">`;
   const xTicks = [1e4, 1e5, 1e6, 2e6];
   xTicks.forEach(v => {
@@ -434,15 +407,12 @@ function renderScatter(titles, genreFilter = 'all') {
   svg += `<text x="-35" y="${innerH/2}" transform="rotate(-90, -35, ${innerH/2})" text-anchor="middle" fill="#a8a39a" font-family="JetBrains Mono" font-size="10" letter-spacing="2">RATING IMDb</text>`;
   svg += `</g>`;
 
-  // Etiquetas de cuadrantes
   svg += `<text x="20" y="20" fill="#f5a623" font-family="JetBrains Mono" font-size="10" letter-spacing="2" opacity=".7">◤ HIDDEN GEMS</text>`;
   svg += `<text x="${innerW - 20}" y="20" text-anchor="end" fill="#e50914" font-family="JetBrains Mono" font-size="10" letter-spacing="2" opacity=".7">HITS MASIVOS ◥</text>`;
 
-  // Puntos
   data.forEach(t => {
     const x = xScale(t.votes);
     const y = yScale(t.rating);
-    // Color según cuadrante: arriba-izq = gem, arriba-der = hit, abajo = decepción
     let color = '#a8a39a';
     let r = 2;
     if (t.rating >= 8.0 && t.votes < 100000) { color = '#f5a623'; r = 3.5; }
@@ -456,8 +426,8 @@ function renderScatter(titles, genreFilter = 'all') {
   $('#chart-scatter').innerHTML = svg;
   attachTooltip('#chart-scatter');
 
-  // Top 4 gems (rating alto, pocos votos) — actualiza con filtro
-  let pool = titles.filter(t => t.votes >= 5000 && t.votes < 100000 && t.rating >= 8.0);
+  const gemsVotesMin = titles.length < 500 ? 10000 : 5000;
+  let pool = titles.filter(t => t.votes >= gemsVotesMin && t.votes < 100000 && t.rating >= 8.0);
   if (genreFilter !== 'all') pool = pool.filter(t => t.genres.includes(genreFilter));
   const gems = pool.sort((a, b) => b.rating - a.rating).slice(0, 4);
   $('#gems-list').innerHTML = '<p style="grid-column: 1/-1; font-family: var(--font-mono); font-size: .75rem; letter-spacing: .15em; text-transform: uppercase; color: var(--ink-soft); margin-bottom: -.5rem;">↓ Top hidden gems</p>' +
@@ -469,14 +439,13 @@ function renderScatter(titles, genreFilter = 'all') {
       </div>
     `).join('');
 
-  // Insight
   const totalHits = pool.length;
   const avgGems = gems.length ? (gems.reduce((s, g) => s + g.rating, 0) / gems.length).toFixed(2) : '—';
   $('#insight-3').innerHTML = `Hay <strong>${totalHits}</strong> joyas escondidas (rating ≥ 8.0 con menos de 100K votos) ${genreFilter === 'all' ? 'en total' : `en ${genreFilter}`}. Las 4 mejores promedian ${avgGems} ★ — comparable a los clásicos consagrados, pero con una fracción de la audiencia.`;
 }
 
 // ============================================================
-// TOOLTIPS COMPARTIDOS
+// TOOLTIPS
 // ============================================================
 let tooltipEl = null;
 function ensureTooltip() {
@@ -511,7 +480,7 @@ function escapeHtml(s) {
 }
 
 // ============================================================
-// HERO STATS animados
+// HERO STATS
 // ============================================================
 function animateNum(el, target, isFmt) {
   const dur = 1400;
@@ -532,26 +501,25 @@ function animateNum(el, target, isFmt) {
 // ============================================================
 (async () => {
   try {
-    const titles = await loadData();
-    setStatus('Calculando métricas...', 92);
+    const raw = await loadData();
+    setStatus('Procesando...', 88);
+    const titles = normalize(raw);
+    THRESHOLDS = getThresholds(titles.length);
     scatterTitles = titles;
 
-    // Hero stats
     const totalVotes = titles.reduce((s, t) => s + t.votes, 0);
     const years = new Set(titles.map(t => t.year)).size;
     animateNum($('#stat-titles'), titles.length, true);
     animateNum($('#stat-votes'), totalVotes, true);
     animateNum($('#stat-years'), years, false);
 
-    // Render
-    setStatus('Renderizando heatmap...', 94);
+    setStatus('Renderizando heatmap...', 92);
     renderHeatmap(computeHeatmap(titles));
 
-    setStatus('Renderizando géneros...', 96);
+    setStatus('Renderizando géneros...', 95);
     renderGenres(computeGenresOverTime(titles));
 
     setStatus('Renderizando scatter...', 98);
-    // Llenar select de géneros
     const allGenres = new Set();
     titles.forEach(t => t.genres.forEach(g => g && allGenres.add(g)));
     const sel = $('#genre-filter');
@@ -563,7 +531,6 @@ function animateNum(el, target, isFmt) {
     setStatus('Listo', 100);
     setTimeout(() => $('#loader').classList.add('hidden'), 400);
 
-    // Intersection observer para fade-in
     const io = new IntersectionObserver(entries => {
       entries.forEach(e => {
         if (e.isIntersecting) {
